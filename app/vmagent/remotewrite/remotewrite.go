@@ -464,16 +464,16 @@ func tryPush(at *auth.Token, wr *prompbmarshal.WriteRequest, forceDropSamplesOnF
 		// Process big tss in smaller blocks in order to reduce the maximum memory usage
 		samplesCount := 0
 		labelsCount := 0
+		// limit sample count and label count
+		// hint: use maxSamplesPerBlock and maxLabelsPerBlock to limit the sample and label
 		i := 0
-		for i < len(tss) {
+		for ; i < len(tss); i++ {
 			samplesCount += len(tss[i].Samples)
 			labelsCount += len(tss[i].Samples) * len(tss[i].Labels)
-			i++
-			if samplesCount >= maxSamplesPerBlock || labelsCount >= maxLabelsPerBlock {
+			if samplesCount > maxSamplesPerBlock || labelsCount > maxLabelsPerBlock {
 				break
 			}
 		}
-
 		ingestionRateLimiter.Register(samplesCount)
 
 		tssBlock := tss

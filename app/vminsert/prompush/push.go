@@ -22,23 +22,25 @@ func Push(wr *prompbmarshal.WriteRequest) {
 	tss := wr.Timeseries
 	for len(tss) > 0 {
 		// Process big tss in smaller blocks in order to reduce maximum memory usage
-		samplesCount := 0
+		// implement prompb push
+		// hint:
+		// - count the sample in tss. if sample count larger than maxRowsPerBlock, call the push function to push data
+		sampleCount := 0
 		i := 0
-		for i < len(tss) {
-			samplesCount += len(tss[i].Samples)
-			i++
-			if samplesCount > maxRowsPerBlock {
+		for ; i < len(tss); i++ {
+			sampleCount += len(tss[i].Samples)
+			if sampleCount > maxRowsPerBlock {
 				break
 			}
 		}
-		tssBlock := tss
-		if i < len(tss) {
-			tssBlock = tss[:i]
-			tss = tss[i:]
-		} else {
+		// push tss[:i]
+		blockTss := tss[:i]
+		if i == len(tss) {
 			tss = nil
+		} else {
+			tss = tss[i:]
 		}
-		push(ctx, tssBlock)
+		push(ctx, blockTss)
 	}
 }
 
