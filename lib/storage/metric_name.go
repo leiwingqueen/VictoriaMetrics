@@ -535,6 +535,7 @@ func MarshalMetricNameRaw(dst []byte, labels []prompb.Label) []byte {
 		dstSize += len(label.Value)
 		dstSize += 4
 	}
+	// format: |size1|size2|...|size3|value1|value2|...|value3
 	dst = bytesutil.ResizeWithCopyMayOverallocate(dst, dstSize)[:dstLen]
 
 	// Marshal labels to dst.
