@@ -39,6 +39,7 @@ var bsmPool = &sync.Pool{
 var errForciblyStopped = fmt.Errorf("forcibly stopped")
 
 func mergeBlockStreamsInternal(ph *partHeader, bsw *blockStreamWriter, bsm *blockStreamMerger, stopCh <-chan struct{}, s *Storage, rowsMerged, rowsDeleted *atomic.Uint64) error {
+	// TODO: implement mergeBlockStreamsInternal
 	dmis := s.getDeletedMetricIDs()
 	pendingBlockIsEmpty := true
 	pendingBlock := getBlock()
@@ -136,44 +137,50 @@ func mergeBlocks(ob, ib1, ib2 *Block, retentionDeadline int64, rowsDeleted *atom
 	ib1.assertMergeable(ib2)
 	ib1.assertUnmarshaled()
 	ib2.assertUnmarshaled()
-
+	// implement
+	// hint:
+	// - use skipSamplesOutsideRetention to skip samples outside retention
+	// - fast path, if ib1 values have smaller timestamps than ib2 values, then appendRows ib1 and ib2
+	// - if ib1 reach to the end, append ib2. the same as ib2
+	// - merge ib1 and ib2
+	// - use appendRow to append data to ob
 	skipSamplesOutsideRetention(ib1, retentionDeadline, rowsDeleted)
 	skipSamplesOutsideRetention(ib2, retentionDeadline, rowsDeleted)
-
-	if ib1.bh.MaxTimestamp < ib2.bh.MinTimestamp {
-		// Fast path - ib1 values have smaller timestamps than ib2 values.
-		appendRows(ob, ib1)
-		appendRows(ob, ib2)
-		return
-	}
-	if ib2.bh.MaxTimestamp < ib1.bh.MinTimestamp {
-		// Fast path - ib2 values have smaller timestamps than ib1 values.
-		appendRows(ob, ib2)
-		appendRows(ob, ib1)
-		return
-	}
-	if ib1.nextIdx >= len(ib1.timestamps) {
-		appendRows(ob, ib2)
-		return
-	}
-	if ib2.nextIdx >= len(ib2.timestamps) {
-		appendRows(ob, ib1)
-		return
-	}
-	for {
-		i := ib1.nextIdx
-		ts2 := ib2.timestamps[ib2.nextIdx]
-		for i < len(ib1.timestamps) && ib1.timestamps[i] <= ts2 {
-			i++
-		}
-		ob.timestamps = append(ob.timestamps, ib1.timestamps[ib1.nextIdx:i]...)
-		ob.values = append(ob.values, ib1.values[ib1.nextIdx:i]...)
-		ib1.nextIdx = i
-		if ib1.nextIdx >= len(ib1.timestamps) {
+	// merge
+	for ib1.nextIdx != len(ib1.timestamps) || ib2.nextIdx != len(ib2.timestamps) {
+		if ib1.nextIdx == len(ib1.timestamps) {
+			// reach to the end
 			appendRows(ob, ib2)
 			return
 		}
-		ib1, ib2 = ib2, ib1
+		if ib2.nextIdx == len(ib2.timestamps) {
+			appendRows(ob, ib1)
+			return
+		}
+		// fast path
+		minTs1 := ib1.timestamps[ib1.nextIdx]
+		minTs2 := ib2.timestamps[ib2.nextIdx]
+		if ib1.bh.MaxTimestamp < minTs2 {
+			appendRows(ob, ib1)
+			appendRows(ob, ib2)
+			return
+		}
+		if ib2.bh.MaxTimestamp < minTs1 {
+			appendRows(ob, ib2)
+			appendRows(ob, ib1)
+			return
+		}
+		if ib1.timestamps[ib1.nextIdx] > ib2.timestamps[ib2.nextIdx] {
+			ib1, ib2 = ib2, ib1
+		}
+		idx := ib1.nextIdx
+		for idx < len(ib1.timestamps) && ib1.timestamps[idx] <= ib2.timestamps[ib2.nextIdx] {
+			idx++
+		}
+		// [nextIdx,idx) append to ob
+		ob.timestamps = append(ob.timestamps, ib1.timestamps[ib1.nextIdx:idx]...)
+		ob.values = append(ob.values, ib1.values[ib1.nextIdx:idx]...)
+		ib1.nextIdx = idx
 	}
 }
 

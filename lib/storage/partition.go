@@ -210,6 +210,7 @@ func mustCreatePartition(timestamp int64, smallPartitionsPath, bigPartitionsPath
 	return pt
 }
 
+// core function, merge parts
 func (pt *partition) startBackgroundWorkers() {
 	// Start file parts mergers, so they could start merging unmerged parts if needed.
 	// There is no need in starting in-memory parts mergers, since there are no in-memory parts yet.
