@@ -18,7 +18,7 @@ The design of the fast queue is driven by the following goals:
 
 ### key component
 
-![overview](vmagent-fastqueue.png)
+![overview](image/vmagent-fastqueue.png)
 
 - WriteRequest
 
