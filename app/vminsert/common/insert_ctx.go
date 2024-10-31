@@ -8,7 +8,8 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/app/vmstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompb"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
+	prompbmarshallimits "github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal/limits"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/slicesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storage"
 )
@@ -30,7 +31,7 @@ type InsertCtx struct {
 func (ctx *InsertCtx) Reset(rowsLen int) {
 	labels := ctx.Labels
 	for i := range labels {
-		labels[i] = prompb.Label{}
+		labels[i] = prompbmarshal.Label{}
 	}
 	ctx.Labels = labels[:0]
 
@@ -51,7 +52,7 @@ func cleanMetricRow(mr *storage.MetricRow) {
 	mr.MetricNameRaw = nil
 }
 
-func (ctx *InsertCtx) marshalMetricNameRaw(prefix []byte, labels []prompb.Label) []byte {
+func (ctx *InsertCtx) marshalMetricNameRaw(prefix []byte, labels []prompbmarshal.Label) []byte {
 	start := len(ctx.metricNamesBuf)
 	ctx.metricNamesBuf = append(ctx.metricNamesBuf, prefix...)
 	ctx.metricNamesBuf = storage.MarshalMetricNameRaw(ctx.metricNamesBuf, labels)
@@ -60,7 +61,10 @@ func (ctx *InsertCtx) marshalMetricNameRaw(prefix []byte, labels []prompb.Label)
 }
 
 // WriteDataPoint writes (timestamp, value) with the given prefix and labels into ctx buffer.
-func (ctx *InsertCtx) WriteDataPoint(prefix []byte, labels []prompb.Label, timestamp int64, value float64) error {
+func (ctx *InsertCtx) WriteDataPoint(prefix []byte, labels []prompbmarshal.Label, timestamp int64, value float64) error {
+	if ctx.skipStreamAggr && prompbmarshallimits.ExceedingLabels(labels) {
+		return nil
+	}
 	metricNameRaw := ctx.marshalMetricNameRaw(prefix, labels)
 	return ctx.addRow(metricNameRaw, timestamp, value)
 }
@@ -68,7 +72,10 @@ func (ctx *InsertCtx) WriteDataPoint(prefix []byte, labels []prompb.Label, times
 // WriteDataPointExt writes (timestamp, value) with the given metricNameRaw and labels into ctx buffer.
 //
 // It returns metricNameRaw for the given labels if len(metricNameRaw) == 0.
-func (ctx *InsertCtx) WriteDataPointExt(metricNameRaw []byte, labels []prompb.Label, timestamp int64, value float64) ([]byte, error) {
+func (ctx *InsertCtx) WriteDataPointExt(metricNameRaw []byte, labels []prompbmarshal.Label, timestamp int64, value float64) ([]byte, error) {
+	if ctx.skipStreamAggr && prompbmarshallimits.ExceedingLabels(labels) {
+		return metricNameRaw, nil
+	}
 	if len(metricNameRaw) == 0 {
 		metricNameRaw = ctx.marshalMetricNameRaw(nil, labels)
 	}
@@ -106,7 +113,7 @@ func (ctx *InsertCtx) AddLabelBytes(name, value []byte) {
 		// Do not skip labels with empty name, since they are equal to __name__.
 		return
 	}
-	ctx.Labels = append(ctx.Labels, prompb.Label{
+	ctx.Labels = append(ctx.Labels, prompbmarshal.Label{
 		// Do not copy name and value contents for performance reasons.
 		// This reduces GC overhead on the number of objects and allocations.
 		Name:  bytesutil.ToUnsafeString(name),
@@ -124,7 +131,7 @@ func (ctx *InsertCtx) AddLabel(name, value string) {
 		// Do not skip labels with empty name, since they are equal to __name__.
 		return
 	}
-	ctx.Labels = append(ctx.Labels, prompb.Label{
+	ctx.Labels = append(ctx.Labels, prompbmarshal.Label{
 		// Do not copy name and value contents for performance reasons.
 		// This reduces GC overhead on the number of objects and allocations.
 		Name:  name,
@@ -140,13 +147,17 @@ func (ctx *InsertCtx) ApplyRelabeling() {
 // FlushBufs flushes buffered rows to the underlying storage.
 func (ctx *InsertCtx) FlushBufs() error {
 	sas := sasGlobal.Load()
+	dropExceeding := false
 	if (sas.IsEnabled() || deduplicator != nil) && !ctx.skipStreamAggr {
 		matchIdxs := matchIdxsPool.Get()
-		matchIdxs.B = ctx.streamAggrCtx.push(ctx.mrs, matchIdxs.B)
+		matchIdxs.B, dropExceeding = ctx.streamAggrCtx.push(ctx.mrs, matchIdxs.B)
 		if !*streamAggrKeepInput {
 			// Remove aggregated rows from ctx.mrs
-			ctx.dropAggregatedRows(matchIdxs.B)
+			ctx.dropAggregatedRows(matchIdxs.B, *streamAggrDropInput, 1)
+		} else if dropExceeding {
+			ctx.dropAggregatedRows(matchIdxs.B, false, 2)
 		}
+
 		matchIdxsPool.Put(matchIdxs)
 	}
 	// There is no need in limiting the number of concurrent calls to vmstorage.AddRows() here,
@@ -163,12 +174,12 @@ func (ctx *InsertCtx) FlushBufs() error {
 	}
 }
 
-func (ctx *InsertCtx) dropAggregatedRows(matchIdxs []byte) {
+func (ctx *InsertCtx) dropAggregatedRows(matchIdxs []byte, dropInput bool, threshold byte) {
 	dst := ctx.mrs[:0]
 	src := ctx.mrs
-	if !*streamAggrDropInput {
+	if !dropInput {
 		for idx, match := range matchIdxs {
-			if match == 1 {
+			if match > threshold {
 				continue
 			}
 			dst = append(dst, src[idx])

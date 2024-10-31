@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promrelabel"
 )
@@ -275,7 +276,11 @@ func TestAggregatorsSuccess(t *testing.T) {
 		// Push the inputMetrics to Aggregators
 		offsetMsecs := time.Now().UnixMilli()
 		tssInput := prompbmarshal.MustParsePromMetrics(inputMetrics, offsetMsecs)
-		matchIdxs := a.Push(tssInput, nil)
+		matchIdxs := bytesutil.ResizeNoCopyMayOverallocate(nil, len(tssInput))
+		for i := range matchIdxs {
+			matchIdxs[i] = 0
+		}
+		matchIdxs = a.Push(tssInput, matchIdxs)
 		a.MustStop()
 
 		// Verify matchIdxs equals to matchIdxsExpected
@@ -994,7 +999,11 @@ func TestAggregatorsWithDedupInterval(t *testing.T) {
 		// Push the inputMetrics to Aggregators
 		offsetMsecs := time.Now().UnixMilli()
 		tssInput := prompbmarshal.MustParsePromMetrics(inputMetrics, offsetMsecs)
-		matchIdxs := a.Push(tssInput, nil)
+		matchIdxs := bytesutil.ResizeNoCopyMayOverallocate(nil, len(tssInput))
+		for i := range matchIdxs {
+			matchIdxs[i] = 0
+		}
+		matchIdxs = a.Push(tssInput, matchIdxs)
 		a.MustStop()
 
 		// Verify matchIdxs equals to matchIdxsExpected

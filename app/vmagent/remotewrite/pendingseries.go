@@ -15,6 +15,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/persistentqueue"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
+	prompbmarshallimits "github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal/limits"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promrelabel"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/timeutil"
 	"github.com/VictoriaMetrics/metrics"
@@ -178,7 +179,10 @@ func (wr *writeRequest) tryPush(src []prompbmarshal.TimeSeries) bool {
 	maxSamplesPerBlock := *maxRowsPerBlock
 	// Allow up to 10x of labels per each block on average.
 	maxLabelsPerBlock := 10 * maxSamplesPerBlock
-	for i := range src {
+	for i, ts := range src {
+		if !prompbmarshallimits.ExceedingLabels(ts.Labels) {
+			continue
+		}
 		if len(wr.samples) >= maxSamplesPerBlock || len(wr.labels) >= maxLabelsPerBlock {
 			wr.tss = tssDst
 			if !wr.tryFlush() {

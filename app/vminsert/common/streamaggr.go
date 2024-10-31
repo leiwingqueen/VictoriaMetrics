@@ -13,6 +13,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/procutil"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
+	prompbmarshallimits "github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal/limits"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/streamaggr"
 	"github.com/VictoriaMetrics/metrics"
@@ -180,15 +181,27 @@ func (ctx *streamAggrCtx) Reset() {
 	ctx.buf = ctx.buf[:0]
 }
 
-func (ctx *streamAggrCtx) push(mrs []storage.MetricRow, matchIdxs []byte) []byte {
+func (ctx *streamAggrCtx) push(mrs []storage.MetricRow, matchIdxs []byte) ([]byte, bool) {
 	mn := &ctx.mn
 	tss := ctx.tss
 	labels := ctx.labels
 	samples := ctx.samples
 	buf := ctx.buf
+	dropExceeding := false
 
 	tssLen := len(tss)
-	for _, mr := range mrs {
+
+	matchIdxs = bytesutil.ResizeNoCopyMayOverallocate(matchIdxs, len(tss))
+	var initialMatchIdx byte
+	sas := sasGlobal.Load()
+	if !sas.IsEnabled() && deduplicator != nil {
+		initialMatchIdx = 1
+	}
+	for i := range matchIdxs {
+		matchIdxs[i] = initialMatchIdx
+	}
+
+	for i, mr := range mrs {
 		if err := mn.UnmarshalRaw(mr.MetricNameRaw); err != nil {
 			logger.Panicf("BUG: cannot unmarshal recently marshaled MetricName: %s", err)
 		}
@@ -227,6 +240,19 @@ func (ctx *streamAggrCtx) push(mrs []storage.MetricRow, matchIdxs []byte) []byte
 			Labels:  labels[labelsLen:],
 			Samples: samples[samplesLen:],
 		})
+
+		if *streamAggrKeepInput {
+			if prompbmarshallimits.ExceedingLabels(labels) {
+				if !dropExceeding {
+					dropExceeding = true
+				}
+				matchIdxs[i] = 3
+			}
+		} else if !*streamAggrDropInput {
+			if prompbmarshallimits.AreLabelsExceeding(labels) {
+				matchIdxs[i] = 2
+			}
+		}
 	}
 	ctx.tss = tss
 	ctx.labels = labels
@@ -235,20 +261,22 @@ func (ctx *streamAggrCtx) push(mrs []storage.MetricRow, matchIdxs []byte) []byte
 
 	tss = tss[tssLen:]
 
-	sas := sasGlobal.Load()
+	sas = sasGlobal.Load()
 	if sas.IsEnabled() {
 		matchIdxs = sas.Push(tss, matchIdxs)
 	} else if deduplicator != nil {
-		matchIdxs = bytesutil.ResizeNoCopyMayOverallocate(matchIdxs, len(tss))
-		for i := range matchIdxs {
-			matchIdxs[i] = 1
-		}
 		deduplicator.Push(tss)
+	}
+
+	for _, match := range matchIdxs {
+		if match == 2 && prompbmarshallimits.ExceedingLabels(labels) && !dropExceeding {
+			dropExceeding = true
+		}
 	}
 
 	ctx.Reset()
 
-	return matchIdxs
+	return matchIdxs, dropExceeding
 }
 
 func pushAggregateSeries(tss []prompbmarshal.TimeSeries) {

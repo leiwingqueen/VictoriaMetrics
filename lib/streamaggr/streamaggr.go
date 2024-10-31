@@ -347,11 +347,7 @@ func (a *Aggregators) Equal(b *Aggregators) bool {
 // It re-uses the matchIdxs if it has enough capacity to hold len(tss) items.
 // Otherwise it allocates new matchIdxs.
 func (a *Aggregators) Push(tss []prompbmarshal.TimeSeries, matchIdxs []byte) []byte {
-	matchIdxs = bytesutil.ResizeNoCopyMayOverallocate(matchIdxs, len(tss))
-	for i := range matchIdxs {
-		matchIdxs[i] = 0
-	}
-	if a == nil {
+	if len(matchIdxs) != len(tss) || a == nil {
 		return matchIdxs
 	}
 
